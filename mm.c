@@ -51,10 +51,10 @@ team_t team = {
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 /*
- * [ Block size | alloc ] Header - 2 Words
+ * [ Block size | alloc ] Header - 1 Words
  * [ Playload           ] (allocated block only)
  * [ Padding            ] (optioanal)
- * [ Block size | alloc ] Footer - 2 Words
+ * [ Block size | alloc ] Footer - 1 Words
  */
 
 // Basic constants and macros
@@ -128,8 +128,8 @@ static void *extend_heap(size_t words) {
         return NULL;
     debug(size);
 
-    // Initailize Header and Footer of new free block
-    PUT(HDRP(bp), PACK(size, false)); // Free block header
+    // Initialize Header and Footer of new free block
+    PUT(HDRP(bp), PACK(size, false)); // Free block header <= Previous Old Epilogue Header
     PUT(FTRP(bp), PACK(size, false)); // Free block footer
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, true)); // New epilogue header
 
