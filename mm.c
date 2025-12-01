@@ -51,10 +51,19 @@ team_t team = {
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 /*
- * [ Block size | alloc ] Header - 2 Words
+ *  < Allocated Block >
+ * [ Block size | alloc ] Header - 1 Words
  * [ Playload           ] (allocated block only)
  * [ Padding            ] (optioanal)
- * [ Block size | alloc ] Footer - 2 Words
+ * [ Block size | alloc ] Footer - 1 Words
+ *
+ * < Free Block >
+ * [ Block size | alloc ] Header - 1 Words
+ * [ Predecessor        ] (old payload)
+ * [ Successor          ] (old payload)
+ * [ Padding            ] (optioanal)
+ * [ Block size | alloc ] Footer - 1 Words
+ *
  */
 
 // Basic constants and macros
@@ -84,12 +93,36 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-static char *heap_listp;
+#define PRED_FREEP(bp) (*(void**)(bp))
+#define SUCC_FREEP(bp) (*(void**)(bp + WSIZE))
+
+static char *heap_listp = NULL; // Heap start pointer
+static char *free_listp = NULL; // Free list head
 static void *coalesce(void *bp);
 static void *extend_heap(size_t words);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
+void remove_block(void *bp);
+void insert_block(void *bp);
 
+/* insert at the front(head) of the explicit free list */
+void insert_block(void *bp) {
+    SUCC_FREEP(bp) = free_listp;
+    PRED_FREEP(bp) = NULL;
+    PRED_FREEP(free_listp) = bp;
+    free_listp = bp;
+}
+
+void remove_block(void *bp) {
+    if (bp == free_listp) {
+        PRED_FREEP(SUCC_FREEP(bp)) = NULL;
+        free_listp = SUCC_FREEP(bp);
+        return;
+    }
+
+    SUCC_FREEP(PRED_FREEP(bp)) = SUCC_FREEP(bp);
+    PRED_FREEP(SUCC_FREEP(bp)) = PRED_FREEP(bp);
+}
 
 static void *coalesce(void *bp) {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
@@ -97,23 +130,29 @@ static void *coalesce(void *bp) {
     size_t size = GET_SIZE(HDRP(bp));
 
     if (prev_alloc && next_alloc) {
+        insert_block(bp);
         return bp;
     } else if (prev_alloc) {
+        remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, false)); // Set Free
         PUT(FTRP(bp), PACK(size, false)); // Set Free
     } else if (next_alloc) {
+        remove_block(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, false));
-        PUT(FTRP(bp), PACK(size, false));
         bp = PREV_BLKP(bp);
+        PUT(HDRP(bp), PACK(size, false));
+        PUT(FTRP(bp), PACK(size, false));
     } else {
+        remove_block(PREV_BLKP(bp));
+        remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
                 GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, false));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, false));
         bp = PREV_BLKP(bp);
     }
+    insert_block(bp);
     return bp;
 }
 
@@ -121,12 +160,10 @@ static void *extend_heap(size_t words) {
     char *bp;
     size_t size;
 
-    debug(words);
     // Always use even size of words to keep alignment
     size = (words + 1) / 2 * DSIZE;
     if ((bp = mem_sbrk(size)) == (void *)-1)
         return NULL;
-    debug(size);
 
     // Initailize Header and Footer of new free block
     PUT(HDRP(bp), PACK(size, false)); // Free block header
@@ -138,15 +175,15 @@ static void *extend_heap(size_t words) {
 }
 
 static void *find_fit(size_t asize) {
-    for (void *bp = heap_listp; GET_SIZE(HDRP(bp)); bp = NEXT_BLKP(bp))
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp))))
+    for (void *bp = free_listp; GET_ALLOC(HDRP(bp)) == false; bp = SUCC_FREEP(bp))
+        if ((asize <= GET_SIZE(HDRP(bp))))
             return bp;
-
     return NULL;
 }
 
 static void place(void *bp, size_t size) {
     size_t block_size = GET_SIZE(HDRP(bp));
+    remove_block(bp); // Since the block is allocated, remove it from free list
 
     if ((block_size - size) >= MINBLOCKSIZE) {
         PUT(HDRP(bp), PACK(size, true));
@@ -155,6 +192,8 @@ static void place(void *bp, size_t size) {
         // Internal Fragmentation
         PUT(HDRP(NEXT_BLKP(bp)), PACK(block_size - size, false));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(block_size - size, false));
+
+        insert_block(NEXT_BLKP(bp)); // insert new free block
     } else {
         // Internal Fragmentation
         PUT(HDRP(bp), PACK(block_size, true));
@@ -167,29 +206,20 @@ static void place(void *bp, size_t size) {
  */
 int mm_init(void)
 {
-    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(6 * WSIZE)) == (void *)-1)
         return -1;
 
     PUT(heap_listp, 0); // Alignment padding
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, true)); // Prolouge Header
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, true)); // Prolouge Footer
-    PUT(heap_listp + (3 * WSIZE), PACK(0, true)); // Epilouge Header
+    PUT(heap_listp + WSIZE, PACK(4 * WSIZE, true)); // Prolouge Header
+    PUT(heap_listp + 2 * WSIZE, NULL); // Prologue PRED pointer
+    PUT(heap_listp + 3 * WSIZE, NULL); // Prologue SUCC pointer
+    PUT(heap_listp + 4 * WSIZE, PACK(4 * WSIZE, true)); // Prologue Footer
+    PUT(heap_listp + 5 * WSIZE, PACK(0, true)); // Epilogue Header
 
-    heap_listp += (2 * WSIZE); // Point Prolouge Footer
-    /*
-     * [     | 16/0 | 16/0 | 8/1 ]
-     *    ^      ^      ^     ^
-     * unused  start    bp   end
-    */
+    free_listp = heap_listp + DSIZE;
 
-    if (extend_heap(CHUNKSIZE / WSIZE) == NULL) // 2^12 / 4 = 1024 Bytes
+    if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
-    /*
-     * [     | 16/0 | 16/0 | (1024 B) | 8/1 ]
-     *                  ^
-     *                  bp
-    */
-
     return 0;
 }
 
