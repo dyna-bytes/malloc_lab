@@ -165,8 +165,8 @@ static void *extend_heap(size_t words) {
     if ((bp = mem_sbrk(size)) == (void *)-1)
         return NULL;
 
-    // Initailize Header and Footer of new free block
-    PUT(HDRP(bp), PACK(size, false)); // Free block header
+    // Initialize Header and Footer of new free block
+    PUT(HDRP(bp), PACK(size, false)); // Free block header <= Previous Old Epilogue Header
     PUT(FTRP(bp), PACK(size, false)); // Free block footer
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, true)); // New epilogue header
 
