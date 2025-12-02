@@ -6,8 +6,8 @@ extern void mm_free (void *ptr);
 extern void *mm_realloc(void *ptr, size_t size);
 
 
-/* 
- * Students work in teams of one or two.  Teams enter their team name, 
+/*
+ * Students work in teams of one or two.  Teams enter their team name,
  * personal names and login IDs in a struct of this
  * type in their bits.c file.
  */
@@ -21,3 +21,9 @@ typedef struct {
 
 extern team_t team;
 
+// #define DBG
+#ifdef DBG
+#define debug(x) printf("[%s](%d) %s is %u\n", __func__, __LINE__, #x, x)
+#else
+#define debug(x)
+#endif
